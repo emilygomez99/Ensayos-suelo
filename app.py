@@ -57,7 +57,35 @@ else:
     try:
         hojas = pd.read_excel(ruta, sheet_name=None)
         hoja_sel = st.selectbox("Hoja", list(hojas.keys())) if len(hojas) > 1 else list(hojas.keys())[0]
-        st.dataframe(hojas[hoja_sel], use_container_width=True)
+        df = hojas[hoja_sel]
+        st.dataframe(df, use_container_width=True)
+
+        # --- Sección de gráficas ---
+        columnas_numericas = df.select_dtypes(include="number").columns.tolist()
+        todas_columnas = df.columns.tolist()
+
+        if len(todas_columnas) >= 2:
+            st.markdown("### 📈 Graficar")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                eje_x = st.selectbox("Eje X", todas_columnas, key="eje_x")
+            with col2:
+                opciones_y = [c for c in columnas_numericas if c != eje_x] or columnas_numericas
+                eje_y = st.selectbox("Eje Y", opciones_y, key="eje_y")
+            with col3:
+                tipo = st.selectbox("Tipo de gráfica", ["Línea", "Dispersión", "Barras"], key="tipo_grafica")
+
+            datos_grafica = df[[eje_x, eje_y]].dropna().sort_values(by=eje_x)
+
+            if tipo == "Línea":
+                st.line_chart(datos_grafica, x=eje_x, y=eje_y)
+            elif tipo == "Dispersión":
+                st.scatter_chart(datos_grafica, x=eje_x, y=eje_y)
+            else:
+                st.bar_chart(datos_grafica, x=eje_x, y=eje_y)
+        else:
+            st.caption("Esta hoja no tiene suficientes columnas para graficar.")
+
     except Exception as e:
         st.warning(f"No pude previsualizar el archivo ({e}), pero sí puedes descargarlo.")
 
