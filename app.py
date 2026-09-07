@@ -14,7 +14,11 @@ st.title("🧪 Ensayos en Suelo a Escala – Acero Corrugado")
 ESQUEMA_PATH = Path(__file__).parent / "esquema_ensayos.png"
 if ESQUEMA_PATH.exists():
     with st.expander("🗺️ Ver esquema completo del árbol de ensayos (guía de navegación)", expanded=False):
-        st.image(str(ESQUEMA_PATH), use_container_width=True)
+        ancho_esquema = st.slider(
+            "Tamaño del esquema", min_value=300, max_value=2000, value=700, step=50,
+            key="ancho_esquema",
+        )
+        st.image(str(ESQUEMA_PATH), width=ancho_esquema)
         st.caption(
             "Usa este esquema como referencia: los selectores de abajo recorren estas mismas ramas "
             "(Mortero / Acero Corrugado → Hincado / Arrancamiento / Normal / Volcamiento → bulbos → diámetro → longitud)."
