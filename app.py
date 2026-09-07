@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import io
 import openpyxl
+from openpyxl.drawing.image import Image as XLImage
 import matplotlib.pyplot as plt
 
 # Carpeta raíz donde viven todas las subcarpetas del árbol (Hincado > ... > Excel)
@@ -324,6 +325,7 @@ else:
             colores = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7"]
             fig, ax = plt.subplots(figsize=(9, 5.5))
             errores = []
+            datos_por_ensayo = {}
 
             for i, nombre_archivo in enumerate(archivos_comparar):
                 cfg = config_por_archivo.get(nombre_archivo)
@@ -344,6 +346,8 @@ else:
                         continue
                     y_suave = _promedio_movil(y, ventana=ventana)
                     ax.plot(x, y_suave, label=nombre_archivo, color=colores[i % len(colores)], linewidth=2)
+                    datos_por_ensayo[f"Desplazamiento_{nombre_archivo}"] = pd.Series(x)
+                    datos_por_ensayo[f"Carga_suavizada_{nombre_archivo}"] = pd.Series(y_suave)
                 except Exception as e:
                     errores.append((nombre_archivo, str(e)))
 
@@ -354,8 +358,66 @@ else:
             ax.legend(frameon=False)
             fig.tight_layout()
 
-            st.pyplot(fig)
+            # Guardar una imagen del gráfico para incrustarla luego en el Excel
+            img_buffer = io.BytesIO()
+            fig.savefig(img_buffer, format="png", dpi=150, bbox_inches="tight")
+            img_buffer.seek(0)
 
-            if errores:
-                for nombre, msg in errores:
-                    st.warning(f"{nombre}: {msg}")
+            # Persistimos todo en session_state para que no se pierda cuando
+            # el usuario le dé clic al botón de descarga (eso recarga la app
+            # y "Generar gráfica combinada" volvería a estar sin presionar).
+            st.session_state["combinada_fig"] = fig
+            st.session_state["combinada_errores"] = errores
+            st.session_state["combinada_df"] = pd.DataFrame(datos_por_ensayo)
+            st.session_state["combinada_img"] = img_buffer.getvalue()
+
+    # --- Mostrar el resultado guardado (persiste entre reruns) ---
+    if "combinada_fig" in st.session_state:
+        st.pyplot(st.session_state["combinada_fig"])
+
+        if st.session_state["combinada_errores"]:
+            for nombre, msg in st.session_state["combinada_errores"]:
+                st.warning(f"{nombre}: {msg}")
+
+        df_export = st.session_state["combinada_df"]
+        if not df_export.empty:
+            st.markdown("#### 💾 Descargar datos de la gráfica combinada")
+            nombre_archivo_salida = st.text_input(
+                "Nombre del archivo Excel (con o sin .xlsx)",
+                value="grafica_combinada.xlsx",
+                key="nombre_excel_combinado",
+            )
+            if not nombre_archivo_salida.lower().endswith(".xlsx"):
+                nombre_archivo_salida += ".xlsx"
+
+            # Construir el Excel: datos crudos + la imagen del gráfico incrustada
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                df_export.to_excel(writer, index=False, sheet_name="Datos")
+            excel_buffer.seek(0)
+
+            wb_final = openpyxl.load_workbook(excel_buffer)
+            ws_final = wb_final["Datos"]
+            img_final = XLImage(io.BytesIO(st.session_state["combinada_img"]))
+            col_img = openpyxl.utils.get_column_letter(len(df_export.columns) + 2)
+            img_final.anchor = f"{col_img}2"
+            ws_final.add_image(img_final)
+
+            final_buffer = io.BytesIO()
+            wb_final.save(final_buffer)
+            final_buffer.seek(0)
+
+            st.download_button(
+                "⬇️ Descargar Excel",
+                data=final_buffer,
+                file_name=nombre_archivo_salida,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="descargar_excel_combinado",
+            )
+            st.caption(
+                "El archivo se descarga con el nombre que escribiste arriba. La **carpeta** de destino "
+                "la decide tu navegador, no la app (por seguridad, ninguna app web puede elegir carpetas "
+                "de tu computador). Si quieres que te pregunte dónde guardar cada vez, actívalo en tu "
+                "navegador: en Chrome/Edge → Configuración → Descargas → 'Preguntar dónde guardar cada "
+                "archivo antes de descargarlo'."
+            )
