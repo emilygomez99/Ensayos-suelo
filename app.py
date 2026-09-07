@@ -8,6 +8,8 @@ from openpyxl.drawing.image import Image as XLImage
 import matplotlib.pyplot as plt
 import requests
 import base64
+import json
+import datetime
 
 # Carpeta raíz donde viven todas las subcarpetas del árbol (Hincado > ... > Excel)
 DATA_DIR = Path(__file__).parent / "data"
@@ -53,6 +55,36 @@ def subir_archivo_a_github(path_en_repo: str, contenido_bytes: bytes, mensaje_co
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"GitHub respondió {resp.status_code}: {resp.text}")
     return resp.json()
+
+
+# --- Historial de comparaciones (para poder comparar ensayos guardados en momentos distintos) ---
+HISTORIAL_PATH_EN_REPO = "historial_comparaciones.json"
+
+
+def cargar_historial():
+    """Lee el historial de comparaciones guardadas desde el JSON en GitHub. Si no existe, devuelve lista vacía."""
+    token = st.secrets.get("GITHUB_TOKEN") if hasattr(st, "secrets") else None
+    if not token:
+        return []
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{HISTORIAL_PATH_EN_REPO}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    resp = requests.get(api_url, headers=headers, timeout=15)
+    if resp.status_code != 200:
+        return []
+    contenido_b64 = resp.json().get("content", "")
+    try:
+        contenido = base64.b64decode(contenido_b64).decode("utf-8")
+        return json.loads(contenido).get("entradas", [])
+    except Exception:
+        return []
+
+
+def guardar_historial(entradas):
+    """Sobrescribe el JSON de historial en GitHub con la lista completa de entradas."""
+    contenido_json = json.dumps({"entradas": entradas}, ensure_ascii=False, indent=2).encode("utf-8")
+    subir_archivo_a_github(
+        HISTORIAL_PATH_EN_REPO, contenido_json, "Actualiza historial de comparaciones"
+    )
 
 ESQUEMA_PATH = Path(__file__).parent / "esquema_ensayos.png"
 if ESQUEMA_PATH.exists():
@@ -175,6 +207,30 @@ def _promedio_movil(y: np.ndarray, ventana: int = 5) -> np.ndarray:
     kernel = np.ones(ventana) / ventana
     y_pad = np.pad(y, (ventana // 2, ventana // 2), mode="edge")
     return np.convolve(y_pad, kernel, mode="valid")[: len(y)]
+
+
+def curva_promedio(series, n_puntos: int = 200):
+    """
+    Recibe una lista de series {"x":[...], "y":[...]} de una misma categoría,
+    las interpola a una malla común de desplazamiento y devuelve (x, y) del
+    promedio punto a punto. Si solo hay una serie, la devuelve tal cual.
+    """
+    series_validas = [s for s in series if len(s["x"]) > 1]
+    if not series_validas:
+        return [], []
+    if len(series_validas) == 1:
+        return series_validas[0]["x"], series_validas[0]["y"]
+
+    x_min = max(min(s["x"]) for s in series_validas)
+    x_max = min(max(s["x"]) for s in series_validas)
+    if x_min >= x_max:  # los rangos no se solapan; usar el rango completo como respaldo
+        x_min = min(min(s["x"]) for s in series_validas)
+        x_max = max(max(s["x"]) for s in series_validas)
+
+    malla = np.linspace(x_min, x_max, n_puntos)
+    interpoladas = [np.interp(malla, s["x"], s["y"]) for s in series_validas]
+    y_prom = np.mean(interpoladas, axis=0)
+    return malla.tolist(), y_prom.tolist()
 
 
 def graficar_ensayos_combinados(
@@ -487,3 +543,231 @@ else:
                         st.markdown(f"[Ver el archivo en GitHub]({url_archivo})")
                 except Exception as e:
                     st.error(f"No pude guardar en GitHub: {e}")
+
+            # --- Guardar esta comparación en el historial de la app ---
+            st.markdown("#### 📌 Agregar esta comparación al historial (para comparar después)")
+            etiqueta_default = " / ".join(breadcrumb) if breadcrumb else "Comparación"
+            etiqueta_historial = st.text_input(
+                "Etiqueta para reconocer esta comparación después",
+                value=etiqueta_default,
+                key="etiqueta_historial",
+            )
+            if st.button("➕ Agregar al historial", key="btn_agregar_historial"):
+                try:
+                    series = []
+                    for col in df_export.columns:
+                        if col.startswith("Desplazamiento_"):
+                            nombre_ensayo = col[len("Desplazamiento_"):]
+                            col_carga = f"Carga_suavizada_{nombre_ensayo}"
+                            if col_carga in df_export.columns:
+                                series.append({
+                                    "nombre": nombre_ensayo,
+                                    "x": df_export[col].dropna().tolist(),
+                                    "y": df_export[col_carga].dropna().tolist(),
+                                })
+                    entradas = cargar_historial()
+                    entradas.append({
+                        "id": datetime.datetime.now().strftime("%Y%m%d%H%M%S"),
+                        "etiqueta": etiqueta_historial,
+                        "fecha": datetime.datetime.now().isoformat(timespec="seconds"),
+                        "series": series,
+                    })
+                    guardar_historial(entradas)
+                    st.success(f"¡Agregado! Ya puedes verlo en '📊 Historial de comparaciones' más abajo.")
+                except Exception as e:
+                    st.error(f"No pude guardar en el historial: {e}")
+
+# --- Historial de comparaciones guardadas (siempre visible, sin importar en qué carpeta estés) ---
+st.markdown("---")
+st.markdown("## 📊 Historial de comparaciones")
+st.caption(
+    "Aquí se acumulan todas las comparaciones que hayas guardado con el botón "
+    "'➕ Agregar al historial', sin importar de qué carpeta (diámetro/longitud/ubicación) vinieran. "
+    "Elige varias para verlas juntas en una sola gráfica."
+)
+
+historial_entradas = cargar_historial()
+
+if not historial_entradas:
+    st.info("Todavía no has guardado ninguna comparación al historial.")
+else:
+    etiquetas_disponibles = [
+        f"{e['etiqueta']} ({e['fecha'][:16].replace('T', ' ')})" for e in historial_entradas
+    ]
+    seleccion_historial = st.multiselect(
+        "Comparaciones guardadas",
+        etiquetas_disponibles,
+        default=etiquetas_disponibles[-min(3, len(etiquetas_disponibles)):],
+        key="seleccion_historial",
+    )
+
+    if seleccion_historial:
+        colores_hist = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7",
+                        "#8e44ad", "#16a085", "#c0392b", "#2c3e50", "#f39c12", "#7f8c8d"]
+        estilos_linea = ["-", "--", ":", "-."]
+
+        modo_representativo = st.checkbox(
+            "🎯 Dejar solo una curva representativa por categoría (para sacar conclusiones)",
+            key="modo_representativo",
+        )
+
+        curvas_a_graficar = []  # cada item: {"etiqueta":, "nombre":, "x":, "y":}
+
+        if modo_representativo:
+            st.caption(
+                "Por defecto se calcula el **promedio** de los ensayos de cada categoría "
+                "(interpolados a una malla común). Si prefieres una curva puntual en vez del "
+                "promedio, elígela en el desplegable de esa categoría."
+            )
+            for etiqueta_completa in seleccion_historial:
+                idx = etiquetas_disponibles.index(etiqueta_completa)
+                entrada = historial_entradas[idx]
+                opciones_rep = ["Promedio de todos"] + [s["nombre"] for s in entrada["series"]]
+                eleccion = st.selectbox(
+                    f"Curva representativa para «{entrada['etiqueta']}»",
+                    opciones_rep,
+                    key=f"rep_{idx}",
+                )
+                if eleccion == "Promedio de todos":
+                    x_rep, y_rep = curva_promedio(entrada["series"])
+                else:
+                    serie_elegida = next(s for s in entrada["series"] if s["nombre"] == eleccion)
+                    x_rep, y_rep = serie_elegida["x"], serie_elegida["y"]
+                if x_rep:
+                    curvas_a_graficar.append({
+                        "etiqueta": entrada["etiqueta"], "nombre": eleccion, "x": x_rep, "y": y_rep,
+                    })
+
+            # Filtro final: de las representativas ya calculadas, cuáles dejar visibles
+            etiquetas_calculadas = [c["etiqueta"] for c in curvas_a_graficar]
+            seleccion_final = st.multiselect(
+                "¿Cuáles representativas quieres dejar para tus conclusiones?",
+                etiquetas_calculadas,
+                default=etiquetas_calculadas,
+                key="seleccion_final_representativas",
+            )
+            curvas_a_graficar = [c for c in curvas_a_graficar if c["etiqueta"] in seleccion_final]
+        else:
+            for etiqueta_completa in seleccion_historial:
+                idx = etiquetas_disponibles.index(etiqueta_completa)
+                entrada = historial_entradas[idx]
+                for serie in entrada["series"]:
+                    curvas_a_graficar.append({
+                        "etiqueta": entrada["etiqueta"], "nombre": serie["nombre"],
+                        "x": serie["x"], "y": serie["y"],
+                    })
+
+        if curvas_a_graficar:
+            # Un color por categoría (mismo color aunque haya varias curvas en esa categoría)
+            etiquetas_unicas = []
+            for c in curvas_a_graficar:
+                if c["etiqueta"] not in etiquetas_unicas:
+                    etiquetas_unicas.append(c["etiqueta"])
+            color_por_etiqueta = {
+                et: colores_hist[i % len(colores_hist)] for i, et in enumerate(etiquetas_unicas)
+            }
+
+            fig_hist, ax_hist = plt.subplots(figsize=(10, 6))
+            datos_hist_export = {}
+            contador_por_etiqueta = {}
+
+            for c in curvas_a_graficar:
+                j = contador_por_etiqueta.get(c["etiqueta"], 0)
+                linestyle = "-" if modo_representativo else estilos_linea[j % len(estilos_linea)]
+                ax_hist.plot(
+                    c["x"], c["y"],
+                    label=f"{c['etiqueta']} · {c['nombre']}",
+                    color=color_por_etiqueta[c["etiqueta"]],
+                    linestyle=linestyle,
+                    linewidth=2.5 if modo_representativo else 2,
+                )
+                contador_por_etiqueta[c["etiqueta"]] = j + 1
+
+                col_base = f"{c['etiqueta']}_{c['nombre']}".replace(" ", "_")
+                datos_hist_export[f"Desplazamiento_{col_base}"] = pd.Series(c["x"])
+                datos_hist_export[f"Carga_{col_base}"] = pd.Series(c["y"])
+
+            ax_hist.set_title("Comparación entre ensayos guardados")
+            ax_hist.set_xlabel("Desplazamiento (mm)")
+            ax_hist.set_ylabel("Carga (kN)")
+            ax_hist.grid(True, color="#e1e0d9", linewidth=0.8)
+            ax_hist.legend(frameon=False, fontsize=8)
+            fig_hist.tight_layout()
+            st.pyplot(fig_hist)
+
+        # --- Descargar esta comparación del historial (Excel local o directo a GitHub) ---
+        if curvas_a_graficar:
+            img_hist_buffer = io.BytesIO()
+            fig_hist.savefig(img_hist_buffer, format="png", dpi=150, bbox_inches="tight")
+            img_hist_buffer.seek(0)
+
+            df_hist_export = pd.DataFrame(datos_hist_export)
+
+            st.markdown("#### 💾 Descargar esta comparación")
+            nombre_excel_hist = st.text_input(
+                "Nombre del archivo Excel (con o sin .xlsx)",
+                value="comparacion_historial.xlsx",
+                key="nombre_excel_historial",
+            )
+            if not nombre_excel_hist.lower().endswith(".xlsx"):
+                nombre_excel_hist += ".xlsx"
+
+            excel_hist_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_hist_buffer, engine="openpyxl") as writer:
+                df_hist_export.to_excel(writer, index=False, sheet_name="Datos")
+            excel_hist_buffer.seek(0)
+
+            wb_hist = openpyxl.load_workbook(excel_hist_buffer)
+            ws_hist = wb_hist["Datos"]
+            img_hist_final = XLImage(io.BytesIO(img_hist_buffer.getvalue()))
+            col_img_hist = openpyxl.utils.get_column_letter(len(df_hist_export.columns) + 2)
+            img_hist_final.anchor = f"{col_img_hist}2"
+            ws_hist.add_image(img_hist_final)
+
+            final_hist_buffer = io.BytesIO()
+            wb_hist.save(final_hist_buffer)
+            final_hist_buffer.seek(0)
+
+            st.download_button(
+                "⬇️ Descargar Excel",
+                data=final_hist_buffer,
+                file_name=nombre_excel_hist,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="descargar_excel_historial",
+            )
+
+            st.markdown("##### ☁️ O guardarlo directo en tu repo de GitHub")
+            carpeta_repo_hist = st.text_input(
+                "Carpeta dentro del repo (déjalo vacío para la raíz)",
+                value="resultados",
+                key="carpeta_github_historial",
+            )
+            carpeta_repo_hist = carpeta_repo_hist.strip().strip("/")
+            ruta_completa_hist = (
+                f"{carpeta_repo_hist}/{nombre_excel_hist}" if carpeta_repo_hist else nombre_excel_hist
+            )
+            st.caption(f"Se guardará en: `{ruta_completa_hist}` dentro de `{GITHUB_REPO}`")
+
+            if st.button("💾 Guardar en GitHub", key="btn_guardar_github_historial"):
+                try:
+                    resultado_hist = subir_archivo_a_github(
+                        ruta_completa_hist,
+                        final_hist_buffer.getvalue(),
+                        f"Agrega {nombre_excel_hist} (comparación de historial) desde la app",
+                    )
+                    url_archivo_hist = resultado_hist.get("content", {}).get("html_url", "")
+                    st.success(f"¡Listo! Se guardó en `{ruta_completa_hist}`.")
+                    if url_archivo_hist:
+                        st.markdown(f"[Ver el archivo en GitHub]({url_archivo_hist})")
+                except Exception as e:
+                    st.error(f"No pude guardar en GitHub: {e}")
+
+    with st.expander("🗑️ Administrar historial (borrar comparaciones guardadas)"):
+        etiqueta_borrar = st.selectbox(
+            "Elige cuál borrar", ["(ninguna)"] + etiquetas_disponibles, key="etiqueta_borrar"
+        )
+        if etiqueta_borrar != "(ninguna)" and st.button("Borrar esta comparación", key="btn_borrar_historial"):
+            idx_borrar = etiquetas_disponibles.index(etiqueta_borrar)
+            nuevas_entradas = [e for i, e in enumerate(historial_entradas) if i != idx_borrar]
+            guardar_historial(nuevas_entradas)
+            st.success("Borrada. Recarga la página para ver el historial actualizado.")
