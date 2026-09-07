@@ -6,11 +6,53 @@ import io
 import openpyxl
 from openpyxl.drawing.image import Image as XLImage
 import matplotlib.pyplot as plt
+import requests
+import base64
 
 # Carpeta raíz donde viven todas las subcarpetas del árbol (Hincado > ... > Excel)
 DATA_DIR = Path(__file__).parent / "data"
 st.set_page_config(page_title="Ensayos en Suelo a Escala", layout="wide")
 st.title("🧪 Ensayos en Suelo a Escala – Acero Corrugado")
+
+# --- Configuración para guardar archivos directo en GitHub ---
+GITHUB_REPO = "emilygomez99/Ensayos-suelo"  # owner/repo
+
+
+def subir_archivo_a_github(path_en_repo: str, contenido_bytes: bytes, mensaje_commit: str):
+    """
+    Crea o actualiza un archivo en el repo de GitHub usando la API de contenidos.
+    Requiere un token con permiso de escritura guardado en st.secrets['GITHUB_TOKEN'].
+    """
+    token = st.secrets.get("GITHUB_TOKEN") if hasattr(st, "secrets") else None
+    if not token:
+        raise RuntimeError(
+            "No encontré GITHUB_TOKEN en los secretos de la app. "
+            "Configúralo en Streamlit Cloud: Settings → Secrets (ver instrucciones)."
+        )
+
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path_en_repo}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    # Si el archivo ya existe en esa ruta, GitHub exige mandar su "sha" para poder sobrescribirlo
+    sha_existente = None
+    resp_get = requests.get(api_url, headers=headers, timeout=15)
+    if resp_get.status_code == 200:
+        sha_existente = resp_get.json().get("sha")
+
+    payload = {
+        "message": mensaje_commit,
+        "content": base64.b64encode(contenido_bytes).decode("utf-8"),
+    }
+    if sha_existente:
+        payload["sha"] = sha_existente
+
+    resp = requests.put(api_url, headers=headers, json=payload, timeout=20)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"GitHub respondió {resp.status_code}: {resp.text}")
+    return resp.json()
 
 ESQUEMA_PATH = Path(__file__).parent / "esquema_ensayos.png"
 if ESQUEMA_PATH.exists():
@@ -421,3 +463,27 @@ else:
                 "navegador: en Chrome/Edge → Configuración → Descargas → 'Preguntar dónde guardar cada "
                 "archivo antes de descargarlo'."
             )
+
+            st.markdown("#### ☁️ O guardarlo directo en tu repo de GitHub")
+            carpeta_repo = st.text_input(
+                "Carpeta dentro del repo (déjalo vacío para guardarlo en la raíz)",
+                value="resultados",
+                key="carpeta_github",
+            )
+            carpeta_repo = carpeta_repo.strip().strip("/")
+            ruta_completa = f"{carpeta_repo}/{nombre_archivo_salida}" if carpeta_repo else nombre_archivo_salida
+            st.caption(f"Se guardará en: `{ruta_completa}` dentro de `{GITHUB_REPO}`")
+
+            if st.button("💾 Guardar en GitHub", key="btn_guardar_github"):
+                try:
+                    resultado = subir_archivo_a_github(
+                        ruta_completa,
+                        final_buffer.getvalue(),
+                        f"Agrega {nombre_archivo_salida} desde la app",
+                    )
+                    url_archivo = resultado.get("content", {}).get("html_url", "")
+                    st.success(f"¡Listo! Se guardó en `{ruta_completa}`.")
+                    if url_archivo:
+                        st.markdown(f"[Ver el archivo en GitHub]({url_archivo})")
+                except Exception as e:
+                    st.error(f"No pude guardar en GitHub: {e}")
