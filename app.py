@@ -5,6 +5,7 @@ import numpy as np
 import io
 import openpyxl
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.utils.dataframe import dataframe_to_rows
 import matplotlib.pyplot as plt
 import requests
 import base64
@@ -207,6 +208,28 @@ def _promedio_movil(y: np.ndarray, ventana: int = 5) -> np.ndarray:
     kernel = np.ones(ventana) / ventana
     y_pad = np.pad(y, (ventana // 2, ventana // 2), mode="edge")
     return np.convolve(y_pad, kernel, mode="valid")[: len(y)]
+
+
+_CARACTERES_INVALIDOS_HOJA = set('[]:*?/\\')
+
+
+def nombre_hoja_valido(texto: str, usados: set) -> str:
+    """Convierte un texto libre en un nombre de hoja de Excel válido (máx. 31
+    caracteres, sin :\\/?*[]) y evita choques si ya existe otra hoja igual.
+    Si el texto es una ruta tipo 'A / B / C', usa el último segmento (la parte
+    más específica, ej. 'Longitud 6D') para que no se corten todos igual."""
+    segmentos = [s.strip() for s in texto.split("/") if s.strip()]
+    base_texto = segmentos[-1] if segmentos else texto
+    limpio = "".join(c for c in base_texto if c not in _CARACTERES_INVALIDOS_HOJA).strip()
+    limpio = limpio[:31] if limpio else "Hoja"
+    base = limpio
+    contador = 2
+    while limpio in usados:
+        sufijo = f"_{contador}"
+        limpio = base[: 31 - len(sufijo)] + sufijo
+        contador += 1
+    usados.add(limpio)
+    return limpio
 
 
 def curva_promedio(series, n_puntos: int = 200):
@@ -614,69 +637,76 @@ else:
 
         # --- Gráficas individuales, una por cada categoría seleccionada ---
         st.markdown("##### 📑 Gráficas individuales por categoría seleccionada")
-        cols_individuales = st.columns(min(3, len(seleccion_historial)))
-        for i, etiqueta_completa in enumerate(seleccion_historial):
+        for etiqueta_completa in seleccion_historial:
             idx = etiquetas_disponibles.index(etiqueta_completa)
             entrada = historial_entradas[idx]
-            with cols_individuales[i % len(cols_individuales)]:
-                if not entrada["series"]:
-                    st.warning(f"«{entrada['etiqueta']}» no tiene curvas guardadas (entrada vacía).")
-                    continue
-                fig_ind, ax_ind = plt.subplots(figsize=(4, 3))
-                for serie in entrada["series"]:
-                    ax_ind.plot(serie["x"], serie["y"], label=serie["nombre"], linewidth=1.8)
-                ax_ind.set_title(entrada["etiqueta"], fontsize=8)
-                ax_ind.set_xlabel("Desplaz. (mm)", fontsize=7)
-                ax_ind.set_ylabel("Carga (kN)", fontsize=7)
-                ax_ind.tick_params(labelsize=6)
-                ax_ind.grid(True, color="#e1e0d9", linewidth=0.6)
-                ax_ind.legend(fontsize=6, frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
-                fig_ind.tight_layout()
+            if not entrada["series"]:
+                st.warning(f"«{entrada['etiqueta']}» no tiene curvas guardadas (entrada vacía).")
+                continue
+            fig_ind, ax_ind = plt.subplots(figsize=(8, 3))
+            for serie in entrada["series"]:
+                ax_ind.plot(serie["x"], serie["y"], label=serie["nombre"], linewidth=1.8)
+            ax_ind.set_title(entrada["etiqueta"], fontsize=10)
+            ax_ind.set_xlabel("Desplazamiento (mm)", fontsize=9)
+            ax_ind.set_ylabel("Carga (kN)", fontsize=9)
+            ax_ind.tick_params(labelsize=8)
+            ax_ind.grid(True, color="#e1e0d9", linewidth=0.6)
+            ax_ind.legend(fontsize=7, frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+            fig_ind.tight_layout()
+            col_ind, _ = st.columns([4, 1])
+            with col_ind:
                 st.pyplot(fig_ind)
+
+        st.markdown("##### 🎯 Elige la curva representativa de cada categoría")
+        st.caption(
+            "Esto se usa tanto si activas la vista representativa abajo, como para la hoja "
+            "'Representativas' del Excel al final. Por defecto es el promedio de los ensayos "
+            "de esa categoría, pero puedes elegir un ensayo puntual en su lugar."
+        )
+        representativas_por_etiqueta = {}  # etiqueta -> {"nombre":, "x":, "y":}
+        for etiqueta_completa in seleccion_historial:
+            idx = etiquetas_disponibles.index(etiqueta_completa)
+            entrada = historial_entradas[idx]
+            if not entrada["series"]:
+                continue
+            opciones_rep = ["Promedio de todos"] + [s["nombre"] for s in entrada["series"]]
+            eleccion = st.selectbox(
+                f"Curva representativa para «{entrada['etiqueta']}»",
+                opciones_rep,
+                key=f"rep_{idx}",
+            )
+            if eleccion == "Promedio de todos":
+                x_rep, y_rep = curva_promedio(entrada["series"])
+            else:
+                serie_elegida = next(s for s in entrada["series"] if s["nombre"] == eleccion)
+                x_rep, y_rep = serie_elegida["x"], serie_elegida["y"]
+            if x_rep:
+                representativas_por_etiqueta[entrada["etiqueta"]] = {
+                    "nombre": eleccion, "x": x_rep, "y": y_rep,
+                }
 
         st.markdown("##### 🔗 Gráfica combinada (todas las curvas juntas)")
 
         modo_representativo = st.checkbox(
-            "🎯 Dejar solo una curva representativa por categoría (para sacar conclusiones)",
+            "🎯 Mostrar en esta gráfica solo la curva representativa de cada categoría (en vez de todos los ensayos)",
             key="modo_representativo",
         )
 
         curvas_a_graficar = []  # cada item: {"etiqueta":, "nombre":, "x":, "y":}
 
         if modo_representativo:
-            st.caption(
-                "Por defecto se calcula el **promedio** de los ensayos de cada categoría "
-                "(interpolados a una malla común). Si prefieres una curva puntual en vez del "
-                "promedio, elígela en el desplegable de esa categoría."
-            )
-            for etiqueta_completa in seleccion_historial:
-                idx = etiquetas_disponibles.index(etiqueta_completa)
-                entrada = historial_entradas[idx]
-                opciones_rep = ["Promedio de todos"] + [s["nombre"] for s in entrada["series"]]
-                eleccion = st.selectbox(
-                    f"Curva representativa para «{entrada['etiqueta']}»",
-                    opciones_rep,
-                    key=f"rep_{idx}",
-                )
-                if eleccion == "Promedio de todos":
-                    x_rep, y_rep = curva_promedio(entrada["series"])
-                else:
-                    serie_elegida = next(s for s in entrada["series"] if s["nombre"] == eleccion)
-                    x_rep, y_rep = serie_elegida["x"], serie_elegida["y"]
-                if x_rep:
-                    curvas_a_graficar.append({
-                        "etiqueta": entrada["etiqueta"], "nombre": eleccion, "x": x_rep, "y": y_rep,
-                    })
-
-            # Filtro final: de las representativas ya calculadas, cuáles dejar visibles
-            etiquetas_calculadas = [c["etiqueta"] for c in curvas_a_graficar]
+            etiquetas_calculadas = list(representativas_por_etiqueta.keys())
             seleccion_final = st.multiselect(
                 "¿Cuáles representativas quieres dejar para tus conclusiones?",
                 etiquetas_calculadas,
                 default=etiquetas_calculadas,
                 key="seleccion_final_representativas",
             )
-            curvas_a_graficar = [c for c in curvas_a_graficar if c["etiqueta"] in seleccion_final]
+            for etiqueta in seleccion_final:
+                rep = representativas_por_etiqueta[etiqueta]
+                curvas_a_graficar.append({
+                    "etiqueta": etiqueta, "nombre": rep["nombre"], "x": rep["x"], "y": rep["y"],
+                })
         else:
             for etiqueta_completa in seleccion_historial:
                 idx = etiquetas_disponibles.index(etiqueta_completa)
@@ -728,72 +758,163 @@ else:
             with col_grafica_hist:
                 st.pyplot(fig_hist)
 
-        # --- Descargar esta comparación del historial (Excel local o directo a GitHub) ---
-        if curvas_a_graficar:
-            img_hist_buffer = io.BytesIO()
-            fig_hist.savefig(img_hist_buffer, format="png", dpi=150, bbox_inches="tight")
-            img_hist_buffer.seek(0)
+        # --- Descargar TODO en un solo Excel: individuales + todas juntas + representativas ---
+        st.markdown("#### 💾 Descargar todo en un solo Excel (una hoja por cada vista)")
+        nombre_excel_hist = st.text_input(
+            "Nombre del archivo Excel (con o sin .xlsx)",
+            value="comparacion_historial.xlsx",
+            key="nombre_excel_historial",
+        )
+        if not nombre_excel_hist.lower().endswith(".xlsx"):
+            nombre_excel_hist += ".xlsx"
 
-            df_hist_export = pd.DataFrame(datos_hist_export)
+        def _hoja_con_datos_e_imagen(wb, nombre_hoja, series_dict, fig):
+            """Crea una hoja con las columnas Desplazamiento/Carga de cada serie y la imagen del gráfico."""
+            ws = wb.create_sheet(nombre_hoja)
+            df = pd.DataFrame(series_dict)
+            for fila in dataframe_to_rows(df, index=False, header=True):
+                ws.append(fila)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+            buf.seek(0)
+            img = XLImage(buf)
+            img.anchor = f"{openpyxl.utils.get_column_letter(len(df.columns) + 2)}2"
+            ws.add_image(img)
+            return ws
 
-            st.markdown("#### 💾 Descargar esta comparación")
-            nombre_excel_hist = st.text_input(
-                "Nombre del archivo Excel (con o sin .xlsx)",
-                value="comparacion_historial.xlsx",
-                key="nombre_excel_historial",
+        wb_todo = openpyxl.Workbook()
+        wb_todo.remove(wb_todo.active)
+        nombres_usados = set()
+
+        # 1) Una hoja por cada categoría seleccionada (los ensayos tal cual, sin combinar)
+        for etiqueta_completa in seleccion_historial:
+            idx = etiquetas_disponibles.index(etiqueta_completa)
+            entrada = historial_entradas[idx]
+            if not entrada["series"]:
+                continue
+            datos_cat = {}
+            for serie in entrada["series"]:
+                col_base = serie["nombre"].replace(" ", "_")
+                datos_cat[f"Desplazamiento_{col_base}"] = pd.Series(serie["x"])
+                datos_cat[f"Carga_{col_base}"] = pd.Series(serie["y"])
+            fig_cat, ax_cat = plt.subplots(figsize=(8, 3))
+            for serie in entrada["series"]:
+                ax_cat.plot(serie["x"], serie["y"], label=serie["nombre"], linewidth=1.8)
+            ax_cat.set_title(entrada["etiqueta"], fontsize=10)
+            ax_cat.set_xlabel("Desplazamiento (mm)", fontsize=9)
+            ax_cat.set_ylabel("Carga (kN)", fontsize=9)
+            ax_cat.grid(True, color="#e1e0d9", linewidth=0.6)
+            ax_cat.legend(fontsize=7, frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+            fig_cat.tight_layout()
+            _hoja_con_datos_e_imagen(
+                wb_todo, nombre_hoja_valido(entrada["etiqueta"], nombres_usados), datos_cat, fig_cat
             )
-            if not nombre_excel_hist.lower().endswith(".xlsx"):
-                nombre_excel_hist += ".xlsx"
+            plt.close(fig_cat)
 
-            excel_hist_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_hist_buffer, engine="openpyxl") as writer:
-                df_hist_export.to_excel(writer, index=False, sheet_name="Datos")
-            excel_hist_buffer.seek(0)
-
-            wb_hist = openpyxl.load_workbook(excel_hist_buffer)
-            ws_hist = wb_hist["Datos"]
-            img_hist_final = XLImage(io.BytesIO(img_hist_buffer.getvalue()))
-            col_img_hist = openpyxl.utils.get_column_letter(len(df_hist_export.columns) + 2)
-            img_hist_final.anchor = f"{col_img_hist}2"
-            ws_hist.add_image(img_hist_final)
-
-            final_hist_buffer = io.BytesIO()
-            wb_hist.save(final_hist_buffer)
-            final_hist_buffer.seek(0)
-
-            st.download_button(
-                "⬇️ Descargar Excel",
-                data=final_hist_buffer,
-                file_name=nombre_excel_hist,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="descargar_excel_historial",
+        # 2) Una hoja "Todas juntas": todos los ensayos de todas las categorías seleccionadas
+        datos_todas = {}
+        fig_todas, ax_todas = plt.subplots(figsize=(8, 3))
+        color_por_etiqueta_todas = {
+            e: colores_hist[i % len(colores_hist)]
+            for i, e in enumerate(
+                dict.fromkeys(
+                    historial_entradas[etiquetas_disponibles.index(ec)]["etiqueta"]
+                    for ec in seleccion_historial
+                )
             )
-
-            st.markdown("##### ☁️ O guardarlo directo en tu repo de GitHub")
-            carpeta_repo_hist = st.text_input(
-                "Carpeta dentro del repo (déjalo vacío para la raíz)",
-                value="resultados",
-                key="carpeta_github_historial",
+        }
+        contador_todas = {}
+        for etiqueta_completa in seleccion_historial:
+            idx = etiquetas_disponibles.index(etiqueta_completa)
+            entrada = historial_entradas[idx]
+            for serie in entrada["series"]:
+                j = contador_todas.get(entrada["etiqueta"], 0)
+                ax_todas.plot(
+                    serie["x"], serie["y"],
+                    label=f"{entrada['etiqueta']} · {serie['nombre']}",
+                    color=color_por_etiqueta_todas[entrada["etiqueta"]],
+                    linestyle=estilos_linea[j % len(estilos_linea)],
+                    linewidth=2,
+                )
+                contador_todas[entrada["etiqueta"]] = j + 1
+                col_base = f"{entrada['etiqueta']}_{serie['nombre']}".replace(" ", "_")
+                datos_todas[f"Desplazamiento_{col_base}"] = pd.Series(serie["x"])
+                datos_todas[f"Carga_{col_base}"] = pd.Series(serie["y"])
+        ax_todas.set_title("Todas las curvas juntas", fontsize=10)
+        ax_todas.set_xlabel("Desplazamiento (mm)", fontsize=9)
+        ax_todas.set_ylabel("Carga (kN)", fontsize=9)
+        ax_todas.grid(True, color="#e1e0d9", linewidth=0.6)
+        ax_todas.legend(fontsize=6, frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+        fig_todas.tight_layout()
+        if datos_todas:
+            _hoja_con_datos_e_imagen(
+                wb_todo, nombre_hoja_valido("Todas juntas", nombres_usados), datos_todas, fig_todas
             )
-            carpeta_repo_hist = carpeta_repo_hist.strip().strip("/")
-            ruta_completa_hist = (
-                f"{carpeta_repo_hist}/{nombre_excel_hist}" if carpeta_repo_hist else nombre_excel_hist
-            )
-            st.caption(f"Se guardará en: `{ruta_completa_hist}` dentro de `{GITHUB_REPO}`")
+        plt.close(fig_todas)
 
-            if st.button("💾 Guardar en GitHub", key="btn_guardar_github_historial"):
-                try:
-                    resultado_hist = subir_archivo_a_github(
-                        ruta_completa_hist,
-                        final_hist_buffer.getvalue(),
-                        f"Agrega {nombre_excel_hist} (comparación de historial) desde la app",
-                    )
-                    url_archivo_hist = resultado_hist.get("content", {}).get("html_url", "")
-                    st.success(f"¡Listo! Se guardó en `{ruta_completa_hist}`.")
-                    if url_archivo_hist:
-                        st.markdown(f"[Ver el archivo en GitHub]({url_archivo_hist})")
-                except Exception as e:
-                    st.error(f"No pude guardar en GitHub: {e}")
+        # 3) Una hoja "Representativas": la curva que elegiste (promedio o puntual) por categoría
+        if representativas_por_etiqueta:
+            datos_rep = {}
+            fig_rep, ax_rep = plt.subplots(figsize=(8, 3))
+            for i, (etiqueta, rep) in enumerate(representativas_por_etiqueta.items()):
+                color_rep = colores_hist[i % len(colores_hist)]
+                ax_rep.plot(rep["x"], rep["y"], label=f"{etiqueta} · {rep['nombre']}", color=color_rep, linewidth=2.5)
+                col_base = f"{etiqueta}_{rep['nombre']}".replace(" ", "_")
+                datos_rep[f"Desplazamiento_{col_base}"] = pd.Series(rep["x"])
+                datos_rep[f"Carga_{col_base}"] = pd.Series(rep["y"])
+            ax_rep.set_title("Curvas representativas (una por categoría)", fontsize=10)
+            ax_rep.set_xlabel("Desplazamiento (mm)", fontsize=9)
+            ax_rep.set_ylabel("Carga (kN)", fontsize=9)
+            ax_rep.grid(True, color="#e1e0d9", linewidth=0.6)
+            ax_rep.legend(fontsize=7, frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+            fig_rep.tight_layout()
+            _hoja_con_datos_e_imagen(
+                wb_todo, nombre_hoja_valido("Representativas", nombres_usados), datos_rep, fig_rep
+            )
+            plt.close(fig_rep)
+
+        final_hist_buffer = io.BytesIO()
+        wb_todo.save(final_hist_buffer)
+        final_hist_buffer.seek(0)
+
+        st.caption(
+            "El archivo tendrá una hoja por cada categoría, más 'Todas juntas' y 'Representativas'."
+        )
+        st.download_button(
+            "⬇️ Descargar Excel",
+            data=final_hist_buffer,
+            file_name=nombre_excel_hist,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="descargar_excel_historial",
+        )
+
+        st.markdown("##### ☁️ O guardarlo directo en tu repo de GitHub")
+        carpeta_repo_hist = st.text_input(
+            "Carpeta dentro del repo (déjalo vacío para la raíz)",
+            value="resultados",
+            key="carpeta_github_historial",
+        )
+        carpeta_repo_hist = carpeta_repo_hist.strip().strip("/")
+        ruta_completa_hist = (
+            f"{carpeta_repo_hist}/{nombre_excel_hist}" if carpeta_repo_hist else nombre_excel_hist
+        )
+        st.caption(f"Se guardará en: `{ruta_completa_hist}` dentro de `{GITHUB_REPO}`")
+
+        if st.button("💾 Guardar en GitHub", key="btn_guardar_github_historial"):
+            try:
+                resultado_hist = subir_archivo_a_github(
+                    ruta_completa_hist,
+                    final_hist_buffer.getvalue(),
+                    f"Agrega {nombre_excel_hist} (comparación de historial) desde la app",
+                )
+                url_archivo_hist = resultado_hist.get("content", {}).get("html_url", "")
+                st.success(f"¡Listo! Se guardó en `{ruta_completa_hist}`.")
+                if url_archivo_hist:
+                    st.markdown(f"[Ver el archivo en GitHub]({url_archivo_hist})")
+            except Exception as e:
+                st.error(f"No pude guardar en GitHub: {e}")
+
+
 
     with st.expander("🗑️ Administrar historial (borrar comparaciones guardadas)"):
         etiqueta_borrar = st.selectbox(
