@@ -421,7 +421,7 @@ else:
             st.warning("Selecciona al menos 2 archivos.")
         else:
             colores = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7"]
-            fig, ax = plt.subplots(figsize=(9, 5.5))
+            fig, ax = plt.subplots(figsize=(6, 4))
             errores = []
             datos_por_ensayo = {}
 
@@ -449,11 +449,12 @@ else:
                 except Exception as e:
                     errores.append((nombre_archivo, str(e)))
 
-            ax.set_title("Carga vs. Desplazamiento")
-            ax.set_xlabel("Desplazamiento (mm)")
-            ax.set_ylabel("Carga (kN)")
+            ax.set_title("Carga vs. Desplazamiento", fontsize=11)
+            ax.set_xlabel("Desplazamiento (mm)", fontsize=9)
+            ax.set_ylabel("Carga (kN)", fontsize=9)
+            ax.tick_params(labelsize=8)
             ax.grid(True, color="#e1e0d9", linewidth=0.8)
-            ax.legend(frameon=False)
+            ax.legend(frameon=False, fontsize=7, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
             fig.tight_layout()
 
             # Guardar una imagen del gráfico para incrustarla luego en el Excel
@@ -547,10 +548,13 @@ else:
             # --- Guardar esta comparación en el historial de la app ---
             st.markdown("#### 📌 Agregar esta comparación al historial (para comparar después)")
             etiqueta_default = " / ".join(breadcrumb) if breadcrumb else "Comparación"
+            # La key incluye la carpeta actual: así, si cambias de carpeta, el campo se
+            # refresca solo con la nueva sugerencia en vez de quedarse con el texto anterior.
+            key_etiqueta = "etiqueta_historial_" + "_".join(breadcrumb) if breadcrumb else "etiqueta_historial_root"
             etiqueta_historial = st.text_input(
                 "Etiqueta para reconocer esta comparación después",
                 value=etiqueta_default,
-                key="etiqueta_historial",
+                key=key_etiqueta,
             )
             if st.button("➕ Agregar al historial", key="btn_agregar_historial"):
                 try:
@@ -605,6 +609,30 @@ else:
         colores_hist = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7",
                         "#8e44ad", "#16a085", "#c0392b", "#2c3e50", "#f39c12", "#7f8c8d"]
         estilos_linea = ["-", "--", ":", "-."]
+
+        # --- Gráficas individuales, una por cada categoría seleccionada ---
+        st.markdown("##### 📑 Gráficas individuales por categoría seleccionada")
+        cols_individuales = st.columns(min(3, len(seleccion_historial)))
+        for i, etiqueta_completa in enumerate(seleccion_historial):
+            idx = etiquetas_disponibles.index(etiqueta_completa)
+            entrada = historial_entradas[idx]
+            with cols_individuales[i % len(cols_individuales)]:
+                if not entrada["series"]:
+                    st.warning(f"«{entrada['etiqueta']}» no tiene curvas guardadas (entrada vacía).")
+                    continue
+                fig_ind, ax_ind = plt.subplots(figsize=(4, 3))
+                for serie in entrada["series"]:
+                    ax_ind.plot(serie["x"], serie["y"], label=serie["nombre"], linewidth=1.8)
+                ax_ind.set_title(entrada["etiqueta"], fontsize=8)
+                ax_ind.set_xlabel("Desplaz. (mm)", fontsize=7)
+                ax_ind.set_ylabel("Carga (kN)", fontsize=7)
+                ax_ind.tick_params(labelsize=6)
+                ax_ind.grid(True, color="#e1e0d9", linewidth=0.6)
+                ax_ind.legend(fontsize=6, frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+                fig_ind.tight_layout()
+                st.pyplot(fig_ind)
+
+        st.markdown("##### 🔗 Gráfica combinada (todas las curvas juntas)")
 
         modo_representativo = st.checkbox(
             "🎯 Dejar solo una curva representativa por categoría (para sacar conclusiones)",
@@ -667,7 +695,7 @@ else:
                 et: colores_hist[i % len(colores_hist)] for i, et in enumerate(etiquetas_unicas)
             }
 
-            fig_hist, ax_hist = plt.subplots(figsize=(10, 6))
+            fig_hist, ax_hist = plt.subplots(figsize=(7, 4.5))
             datos_hist_export = {}
             contador_por_etiqueta = {}
 
@@ -687,11 +715,12 @@ else:
                 datos_hist_export[f"Desplazamiento_{col_base}"] = pd.Series(c["x"])
                 datos_hist_export[f"Carga_{col_base}"] = pd.Series(c["y"])
 
-            ax_hist.set_title("Comparación entre ensayos guardados")
-            ax_hist.set_xlabel("Desplazamiento (mm)")
-            ax_hist.set_ylabel("Carga (kN)")
+            ax_hist.set_title("Comparación entre ensayos guardados", fontsize=10)
+            ax_hist.set_xlabel("Desplazamiento (mm)", fontsize=9)
+            ax_hist.set_ylabel("Carga (kN)", fontsize=9)
+            ax_hist.tick_params(labelsize=8)
             ax_hist.grid(True, color="#e1e0d9", linewidth=0.8)
-            ax_hist.legend(frameon=False, fontsize=8)
+            ax_hist.legend(frameon=False, fontsize=7, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
             fig_hist.tight_layout()
             st.pyplot(fig_hist)
 
