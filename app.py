@@ -421,7 +421,7 @@ else:
             st.warning("Selecciona al menos 2 archivos.")
         else:
             colores = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7"]
-            fig, ax = plt.subplots(figsize=(5.5, 3))
+            fig, ax = plt.subplots(figsize=(8, 3))
             errores = []
             datos_por_ensayo = {}
 
@@ -472,7 +472,7 @@ else:
 
     # --- Mostrar el resultado guardado (persiste entre reruns) ---
     if "combinada_fig" in st.session_state:
-        col_grafica, _ = st.columns([3, 2])
+        col_grafica, _ = st.columns([4, 1])
         with col_grafica:
             st.pyplot(st.session_state["combinada_fig"])
 
@@ -697,7 +697,7 @@ else:
                 et: colores_hist[i % len(colores_hist)] for i, et in enumerate(etiquetas_unicas)
             }
 
-            fig_hist, ax_hist = plt.subplots(figsize=(5.5, 3))
+            fig_hist, ax_hist = plt.subplots(figsize=(8, 3))
             datos_hist_export = {}
             contador_por_etiqueta = {}
 
@@ -724,7 +724,7 @@ else:
             ax_hist.grid(True, color="#e1e0d9", linewidth=0.8)
             ax_hist.legend(frameon=False, fontsize=7, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
             fig_hist.tight_layout()
-            col_grafica_hist, _ = st.columns([3, 2])
+            col_grafica_hist, _ = st.columns([4, 1])
             with col_grafica_hist:
                 st.pyplot(fig_hist)
 
