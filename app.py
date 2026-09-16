@@ -232,6 +232,22 @@ def nombre_hoja_valido(texto: str, usados: set) -> str:
     return limpio
 
 
+import re
+
+
+def segmento_corto(etiqueta: str) -> str:
+    """La parte más específica de una ruta tipo 'A / B / C' -> 'C'."""
+    segmentos = [s.strip() for s in etiqueta.split("/") if s.strip()]
+    return segmentos[-1] if segmentos else etiqueta
+
+
+def identificador_ensayo(nombre_archivo: str, indice_respaldo: int) -> str:
+    """Extrae el número entre paréntesis del nombre de archivo (ej. '...(2)...' -> '2');
+    si no encuentra ninguno, usa un número secuencial como respaldo."""
+    m = re.search(r"\((\d+)\)", nombre_archivo)
+    return m.group(1) if m else str(indice_respaldo)
+
+
 def curva_promedio(series, n_puntos: int = 200):
     """
     Recibe una lista de series {"x":[...], "y":[...]} de una misma categoría,
@@ -793,13 +809,14 @@ else:
             if not entrada["series"]:
                 continue
             datos_cat = {}
-            for serie in entrada["series"]:
-                col_base = serie["nombre"].replace(" ", "_")
+            for i, serie in enumerate(entrada["series"], start=1):
+                col_base = f"Ensayo_{identificador_ensayo(serie['nombre'], i)}"
                 datos_cat[f"Desplazamiento_{col_base}"] = pd.Series(serie["x"])
                 datos_cat[f"Carga_{col_base}"] = pd.Series(serie["y"])
             fig_cat, ax_cat = plt.subplots(figsize=(8, 3))
-            for serie in entrada["series"]:
-                ax_cat.plot(serie["x"], serie["y"], label=serie["nombre"], linewidth=1.8)
+            for i, serie in enumerate(entrada["series"], start=1):
+                etiqueta_leyenda = f"Ensayo {identificador_ensayo(serie['nombre'], i)}"
+                ax_cat.plot(serie["x"], serie["y"], label=etiqueta_leyenda, linewidth=1.8)
             ax_cat.set_title(entrada["etiqueta"], fontsize=10)
             ax_cat.set_xlabel("Desplazamiento (mm)", fontsize=9)
             ax_cat.set_ylabel("Carga (kN)", fontsize=9)
@@ -827,17 +844,19 @@ else:
         for etiqueta_completa in seleccion_historial:
             idx = etiquetas_disponibles.index(etiqueta_completa)
             entrada = historial_entradas[idx]
+            corto = segmento_corto(entrada["etiqueta"])
             for serie in entrada["series"]:
                 j = contador_todas.get(entrada["etiqueta"], 0)
+                id_ensayo = identificador_ensayo(serie["nombre"], j + 1)
                 ax_todas.plot(
                     serie["x"], serie["y"],
-                    label=f"{entrada['etiqueta']} · {serie['nombre']}",
+                    label=f"{corto} · Ensayo {id_ensayo}",
                     color=color_por_etiqueta_todas[entrada["etiqueta"]],
                     linestyle=estilos_linea[j % len(estilos_linea)],
                     linewidth=2,
                 )
                 contador_todas[entrada["etiqueta"]] = j + 1
-                col_base = f"{entrada['etiqueta']}_{serie['nombre']}".replace(" ", "_")
+                col_base = f"{corto}_{id_ensayo}".replace(" ", "_")
                 datos_todas[f"Desplazamiento_{col_base}"] = pd.Series(serie["x"])
                 datos_todas[f"Carga_{col_base}"] = pd.Series(serie["y"])
         ax_todas.set_title("Todas las curvas juntas", fontsize=10)
@@ -858,8 +877,11 @@ else:
             fig_rep, ax_rep = plt.subplots(figsize=(8, 3))
             for i, (etiqueta, rep) in enumerate(representativas_por_etiqueta.items()):
                 color_rep = colores_hist[i % len(colores_hist)]
-                ax_rep.plot(rep["x"], rep["y"], label=f"{etiqueta} · {rep['nombre']}", color=color_rep, linewidth=2.5)
-                col_base = f"{etiqueta}_{rep['nombre']}".replace(" ", "_")
+                corto = segmento_corto(etiqueta)
+                sufijo = "Prom" if rep["nombre"] == "Promedio de todos" else f"Ensayo_{identificador_ensayo(rep['nombre'], i + 1)}"
+                etiqueta_leyenda = f"{corto} ({'promedio' if rep['nombre'] == 'Promedio de todos' else sufijo.replace('_', ' ')})"
+                ax_rep.plot(rep["x"], rep["y"], label=etiqueta_leyenda, color=color_rep, linewidth=2.5)
+                col_base = f"{corto}_{sufijo}".replace(" ", "_")
                 datos_rep[f"Desplazamiento_{col_base}"] = pd.Series(rep["x"])
                 datos_rep[f"Carga_{col_base}"] = pd.Series(rep["y"])
             ax_rep.set_title("Curvas representativas (una por categoría)", fontsize=10)
