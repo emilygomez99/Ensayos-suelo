@@ -11,6 +11,7 @@ import requests
 import base64
 import json
 import datetime
+import hashlib
 
 # Carpeta raíz donde viven todas las subcarpetas del árbol (Hincado > ... > Excel)
 DATA_DIR = Path(__file__).parent / "data"
@@ -246,6 +247,11 @@ def identificador_ensayo(nombre_archivo: str, indice_respaldo: int) -> str:
     si no encuentra ninguno, usa un número secuencial como respaldo."""
     m = re.search(r"\((\d+)\)", nombre_archivo)
     return m.group(1) if m else str(indice_respaldo)
+
+
+def clave_color(etiqueta: str) -> str:
+    """Key estable (no cambia entre reruns) para el color_picker de cada categoría."""
+    return "color_" + hashlib.md5(etiqueta.encode("utf-8")).hexdigest()[:10]
 
 
 def curva_promedio(series, n_puntos: int = 200):
@@ -701,6 +707,23 @@ else:
                     "nombre": eleccion, "x": x_rep, "y": y_rep,
                 }
 
+        # --- Color de cada categoría (editable). Por defecto usa la paleta automática,
+        # pero se puede cambiar aquí y se aplica tanto a la gráfica como al Excel. ---
+        etiquetas_para_color = list(dict.fromkeys(
+            historial_entradas[etiquetas_disponibles.index(ec)]["etiqueta"]
+            for ec in seleccion_historial
+        ))
+        st.markdown("##### 🎨 Color de cada categoría")
+        with st.expander("Elegir colores", expanded=False):
+            colores_elegidos = {}
+            cols_color = st.columns(min(4, len(etiquetas_para_color)) or 1)
+            for i, etiqueta in enumerate(etiquetas_para_color):
+                color_defecto = colores_hist[i % len(colores_hist)]
+                with cols_color[i % len(cols_color)]:
+                    colores_elegidos[etiqueta] = st.color_picker(
+                        segmento_corto(etiqueta), color_defecto, key=clave_color(etiqueta)
+                    )
+
         st.markdown("##### 🔗 Gráfica combinada (todas las curvas juntas)")
 
         modo_representativo = st.checkbox(
@@ -740,7 +763,8 @@ else:
                 if c["etiqueta"] not in etiquetas_unicas:
                     etiquetas_unicas.append(c["etiqueta"])
             color_por_etiqueta = {
-                et: colores_hist[i % len(colores_hist)] for i, et in enumerate(etiquetas_unicas)
+                et: colores_elegidos.get(et, colores_hist[i % len(colores_hist)])
+                for i, et in enumerate(etiquetas_unicas)
             }
 
             fig_hist, ax_hist = plt.subplots(figsize=(8, 3))
@@ -832,7 +856,7 @@ else:
         datos_todas = {}
         fig_todas, ax_todas = plt.subplots(figsize=(8, 3))
         color_por_etiqueta_todas = {
-            e: colores_hist[i % len(colores_hist)]
+            e: colores_elegidos.get(e, colores_hist[i % len(colores_hist)])
             for i, e in enumerate(
                 dict.fromkeys(
                     historial_entradas[etiquetas_disponibles.index(ec)]["etiqueta"]
@@ -876,7 +900,7 @@ else:
             datos_rep = {}
             fig_rep, ax_rep = plt.subplots(figsize=(8, 3))
             for i, (etiqueta, rep) in enumerate(representativas_por_etiqueta.items()):
-                color_rep = colores_hist[i % len(colores_hist)]
+                color_rep = colores_elegidos.get(etiqueta, colores_hist[i % len(colores_hist)])
                 corto = segmento_corto(etiqueta)
                 sufijo = "Prom" if rep["nombre"] == "Promedio de todos" else f"Ensayo_{identificador_ensayo(rep['nombre'], i + 1)}"
                 etiqueta_leyenda = f"{corto} ({'promedio' if rep['nombre'] == 'Promedio de todos' else sufijo.replace('_', ' ')})"
